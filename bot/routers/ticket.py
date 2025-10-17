@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from .config import config
+from ..config import config
 
 # Настройка логирования
 logging.basicConfig(
@@ -467,5 +467,4 @@ async def handle_catalog(callback: CallbackQuery):
 
 
 if __name__ == '__main__':
-    import asyncio
-    asyncio.run(main())
+    pass

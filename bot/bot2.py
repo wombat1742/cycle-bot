@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from config import config
+from .config import config
 
 # Настройка логирования
 logging.basicConfig(
@@ -18,8 +18,6 @@ logger = logging.getLogger(__name__)
 # Роутер
 router = Router()
 
-# ID администраторов/поддержки из конфига
-SUPPORT_IDS = config.ADMIN_IDS
 
 # Состояния для FSM
 class SupportStates(StatesGroup):
@@ -85,7 +83,7 @@ async def start(message: Message):
     reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     
     await message.answer(
-        f"🚴‍♂️ Добро пожаловать в {config.SHOP_NAME}!\n\n"
+        f"🚴‍♂️ Добро пожаловать в МАГАЗИН ШТОР!\n\n"
         "Выберите опцию:",
         reply_markup=reply_markup
     )
@@ -133,7 +131,7 @@ async def handle_support_request(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @router.message(SupportStates.awaiting_support_message)
-async def forward_to_support(message: Message, state: FSMContext, bot: Bot):
+async def forward_to_support(message: Message, state: FSMContext, bot: Bot, config=config):
     """Пересылка сообщения в поддержку (анонимно)"""
     user = message.from_user
     message_text = message.text
@@ -155,27 +153,26 @@ async def forward_to_support(message: Message, state: FSMContext, bot: Bot):
     reply_markup = InlineKeyboardMarkup(inline_keyboard=reply_keyboard)
     
     # Отправляем всем поддержкам
-    for support_id in SUPPORT_IDS:
-        try:
-            sent_message = await bot.send_message(
-                chat_id=support_id,
-                text=support_message,
-                reply_markup=reply_markup
-            )
+    try:
+        sent_message = await bot.send_message(
+            chat_id=config.SUPPORT_ID,
+            text=support_message,
+            reply_markup=reply_markup
+        )
+        
+        # Сохраняем связь сообщений
+        if user.id not in user_support_messages:
+            user_support_messages[user.id] = []
+        
+        user_support_messages[user.id].append({
+            'user_message_id': message.message_id,
+            'support_message_id': sent_message.message_id,
+            'SUPPORT_ID': config.SUPPORT_ID,
+            'user_name': user.first_name
+        })
             
-            # Сохраняем связь сообщений
-            if user.id not in user_support_messages:
-                user_support_messages[user.id] = []
-            
-            user_support_messages[user.id].append({
-                'user_message_id': message.message_id,
-                'support_message_id': sent_message.message_id,
-                'support_chat_id': support_id,
-                'user_name': user.first_name
-            })
-            
-        except Exception as e:
-            logger.error(f"Ошибка отправки поддержке {support_id}: {e}")
+    except Exception as e:
+        logger.error(f"Ошибка отправки поддержке {config.SUPPORT_ID}: {e}")
     
     # Подтверждение пользователю
     keyboard = [
@@ -193,7 +190,7 @@ async def forward_to_support(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
 
 @router.callback_query(F.data.startswith("reply_"))
-async def handle_support_reply(callback: CallbackQuery, state: FSMContext):
+async def handle_support_reply(callback: CallbackQuery, state: FSMContext, config=config):
     """Обработка ответа от поддержки"""
     user_id = int(callback.data.split('_')[1])
     
@@ -212,7 +209,7 @@ async def handle_support_reply(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @router.callback_query(F.data.startswith("resolve_"))
-async def handle_resolve_support(callback: CallbackQuery):
+async def handle_resolve_support(callback: CallbackQuery, config=config):
     """Пометить обращение как решенное"""
     user_id = int(callback.data.split('_')[1])
     
@@ -222,7 +219,7 @@ async def handle_resolve_support(callback: CallbackQuery):
     await callback.answer()
 
 @router.message(SupportStates.replying_to_user)
-async def handle_support_message(message: Message, state: FSMContext, bot: Bot):
+async def handle_support_message(message: Message, state: FSMContext, bot: Bot, config=config):
     """Обработка сообщения от поддержки пользователю"""
     data = await state.get_data()
     user_id = data.get('user_id')
@@ -249,7 +246,7 @@ async def handle_support_message(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
 
 @router.message(F.reply_to_message)
-async def forward_user_reply_to_support(message: Message, bot: Bot):
+async def forward_user_reply_to_support(message: Message, bot: Bot, config=config):
     """Пересылка ответа пользователя обратно в поддержку"""
     user = message.from_user
     message_text = message.text
@@ -266,25 +263,25 @@ async def forward_user_reply_to_support(message: Message, bot: Bot):
         )
         
         # Отправляем всем поддержкам
-        for support_id in SUPPORT_IDS:
-            try:
-                keyboard = [
-                    [InlineKeyboardButton(text="📝 Ответить", callback_data=f"reply_{user.id}")],
-                    [InlineKeyboardButton(text="✅ Решено", callback_data=f"resolve_{user.id}")]
-                ]
-                
-                await bot.send_message(
-                    chat_id=support_id,
-                    text=support_message,
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-                )
-            except Exception as e:
-                logger.error(f"Ошибка отправки поддержке {support_id}: {e}")
+
+        try:
+            keyboard = [
+                [InlineKeyboardButton(text="📝 Ответить", callback_data=f"reply_{user.id}")],
+                [InlineKeyboardButton(text="✅ Решено", callback_data=f"resolve_{user.id}")]
+            ]
+            
+            await bot.send_message(
+                chat_id=config.SUPPORT_ID,
+                text=support_message,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+            )
+        except Exception as e:
+            logger.error(f"Ошибка отправки поддержке {config.SUPPORT_ID}: {e}")
         
         await message.answer("✅ Ваш ответ отправлен в поддержку!")
 
 @router.callback_query(F.data == "cancel_support")
-async def handle_cancel_support(callback: CallbackQuery, state: FSMContext):
+async def handle_cancel_support(callback: CallbackQuery, state: FSMContext, config=config):
     """Отмена запроса в поддержку"""
     await state.clear()
     
@@ -333,6 +330,7 @@ async def handle_main_menu(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("test_"))
 async def handle_test_selection(callback: CallbackQuery):
     """Обработка выбора теста"""
+    global user_progress
     test_id = int(callback.data.split('_')[1])
     user_id = callback.from_user.id
     
@@ -354,7 +352,7 @@ async def handle_test_selection(callback: CallbackQuery):
 async def show_question(callback: CallbackQuery):
     """Показ вопроса теста"""
     user_id = callback.from_user.id
-    
+    global user_progress
     if user_id not in user_progress:
         await callback.message.edit_text("Сессия устарела")
         return
@@ -391,7 +389,7 @@ async def show_question(callback: CallbackQuery):
 async def handle_answer(callback: CallbackQuery):
     """Обработка ответа на вопрос теста"""
     user_id = callback.from_user.id
-    
+    global user_progress
     if callback.data == "back":
         progress = user_progress[user_id]
         if progress['current_question'] > 0:
@@ -426,7 +424,7 @@ async def handle_answer(callback: CallbackQuery):
 async def finish_test(callback: CallbackQuery):
     """Завершение теста"""
     user_id = callback.from_user.id
-    
+    global user_progress
     if user_id not in user_progress:
         await callback.message.edit_text("Сессия устарела")
         return
@@ -467,18 +465,6 @@ async def handle_catalog(callback: CallbackQuery):
     )
     await callback.answer()
 
-async def main():
-    """Запуск бота"""
-    bot = Bot(token=config.BOT_TOKEN)
-    storage = MemoryStorage()
-    dp = Dispatcher(storage=storage)
-    dp.include_router(router)
-    
-    print(f"🤖 Бот {config.SHOP_NAME} запущен!")
-    print(f"📞 Поддержка: {len(SUPPORT_IDS)} администраторов")
-    print("🚴 Система продажи велосипедов активна")
-    
-    await dp.start_polling(bot)
 
 if __name__ == '__main__':
     import asyncio

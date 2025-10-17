@@ -1,9 +1,12 @@
 import logging
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, ConversationHandler
-from datetime import datetime
-import json
-import os
+from aiogram import Bot, Dispatcher, Router, F
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+
+from config import config
 
 # Настройка логирования
 logging.basicConfig(
@@ -12,284 +15,471 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Состояния для ConversationHandler
-SELECTING_CATEGORY, VIEWING_PRODUCT, CART, CHECKOUT = range(4)
+# Роутер
+router = Router()
 
-# Данные о велосипедах (в реальном проекте это была бы БД)
-BIKES_DATA = {
-    'folding': {
-        'name': '📦 Складные велосипеды',
-        'bikes': [
-            {'id': 1, 'name': 'Stels Folding Pro', 'price': 15000, 'description': 'Легкий складной велосипед для города'},
-            {'id': 2, 'name': 'Forward Compact', 'price': 12000, 'description': 'Компактный и удобный'},
-        ]
-    },
-    'mountain': {
-        'name': '🏔️ Горные велосипеды',
-        'bikes': [
-            {'id': 3, 'name': 'GT Aggressor Pro', 'price': 35000, 'description': 'Профессиональный горный велосипед'},
-            {'id': 4, 'name': 'Trek Marlin 5', 'price': 28000, 'description': 'Надежный для трейлов'},
-        ]
-    },
-    'hybrid': {
-        'name': '🚴 Гибридные велосипеды',
-        'bikes': [
-            {'id': 5, 'name': 'Scott Sub Cross', 'price': 32000, 'description': 'Универсальный для города и легкого бездорожья'},
-            {'id': 6, 'name': 'Cannondale Quick', 'price': 25000, 'description': 'Комфортный и быстрый'},
-        ]
-    },
-    'road': {
-        'name': '🏁 Шоссейные велосипеды',
-        'bikes': [
-            {'id': 7, 'name': 'Specialized Allez', 'price': 45000, 'description': 'Легкий и быстрый шоссейник'},
-            {'id': 8, 'name': 'Bianchi Via Nirone', 'price': 52000, 'description': 'Классика итальянского бренда'},
+# ID администраторов/поддержки из конфига
+SUPPORT_IDS = config.ADMIN_IDS
+
+# Состояния для FSM
+class SupportStates(StatesGroup):
+    awaiting_support_message = State()
+    replying_to_user = State()
+
+# Структура тестов
+TESTS = [
+    {
+        "id": 1,
+        "name": "bike_type_selection",
+        "title": "🚴 Подбор идеального велосипеда",
+        "questions": [
+            {
+                "id": 1,
+                "text": "Для каких целей планируете использовать велосипед?",
+                "answers": [
+                    {"id": 1, "key": "city", "value": 1, "text": "🏙️ Городские поездки"},
+                    {"id": 2, "key": "sport", "value": 2, "text": "🏁 Спорт и тренировки"},
+                    {"id": 3, "key": "tourism", "value": 3, "text": "🗺️ Туризм и походы"},
+                    {"id": 4, "key": "offroad", "value": 4, "text": "🏔️ Бездорожье и горы"}
+                ]
+            },
+            {
+                "id": 2,
+                "text": "Какой у вас уровень подготовки?",
+                "answers": [
+                    {"id": 5, "key": "beginner", "value": 1, "text": "🟢 Начинающий"},
+                    {"id": 6, "key": "intermediate", "value": 2, "text": "🟡 Продолжающий"},
+                    {"id": 7, "key": "pro", "value": 3, "text": "🔴 Профессионал"}
+                ]
+            },
+            {
+                "id": 3,
+                "text": "Какой бюджет рассматриваете?",
+                "answers": [
+                    {"id": 8, "key": "budget", "value": 1, "text": "💰 До 20,000₽"},
+                    {"id": 9, "key": "medium", "value": 2, "text": "💵 20,000-50,000₽"},
+                    {"id": 10, "key": "premium", "value": 3, "text": "💎 Свыше 50,000₽"}
+                ]
+            }
         ]
     }
-}
+]
 
-# Хранилище корзин пользователей (в реальном проекте - БД)
-user_carts = {}
+# Хранилища данных
+user_progress = {}
+user_support_messages = {}
 
-async def start(update: Update, context: CallbackContext) -> int:
-    """Начало работы с ботом - главное меню"""
-    user = update.message.from_user
-    logger.info(f"User {user.first_name} started the conversation")
+@router.message(Command("start"))
+async def start(message: Message):
+    """Главное меню"""
+    keyboard = [
+        [
+            InlineKeyboardButton(text="🚴 Подбор велосипеда", callback_data="test_1"),
+            InlineKeyboardButton(text="🛒 Каталог", callback_data="catalog")
+        ],
+        [
+            InlineKeyboardButton(text="📞 Связаться с поддержкой", callback_data="support"),
+            InlineKeyboardButton(text="ℹ️ О магазине", callback_data="about")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     
-    # Инициализируем корзину пользователя
-    user_carts[user.id] = []
+    await message.answer(
+        f"🚴‍♂️ Добро пожаловать в {config.SHOP_NAME}!\n\n"
+        "Выберите опцию:",
+        reply_markup=reply_markup
+    )
+
+@router.callback_query(F.data == "about")
+async def handle_about(callback: CallbackQuery):
+    """Информация о магазине"""
+    about_text = (
+        f"🏪 **{config.SHOP_NAME}**\n\n"
+        f"📞 Телефон: {config.SHOP_PHONE}\n"
+        f"📍 Адрес: {config.SHOP_ADDRESS}\n\n"
+        "🕒 Время работы:\n"
+        "Пн-Пт: 9:00-21:00\n"
+        "Сб-Вс: 10:00-20:00"
+    )
     
     keyboard = [
-        [KeyboardButton("📦 Складные"), KeyboardButton("🏔️ Горные")],
-        [KeyboardButton("🚴 Гибридные"), KeyboardButton("🏁 Шоссейные")],
-        [KeyboardButton("🛒 Корзина"), KeyboardButton("ℹ️ О нас")]
+        [InlineKeyboardButton(text="📞 Поддержка", callback_data="support")],
+        [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
     ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
-    await update.message.reply_text(
-        "🚴‍♂️ Добро пожаловать в магазин велосипедов!\n\n"
-        "Выберите категорию велосипедов:",
+    await callback.message.edit_text(
+        about_text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "support")
+async def handle_support_request(callback: CallbackQuery, state: FSMContext):
+    """Обработка запроса в поддержку"""
+    keyboard = [
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_support")]
+    ]
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    await callback.message.edit_text(
+        "📞 **Служба поддержки**\n\n"
+        "Напишите ваш вопрос, и мы ответим в ближайшее время:\n\n"
+        "💬 _Просто напишите сообщение..._",
         reply_markup=reply_markup
     )
     
-    return SELECTING_CATEGORY
+    # Устанавливаем состояние ожидания сообщения для поддержки
+    await state.set_state(SupportStates.awaiting_support_message)
+    await callback.answer()
 
-async def handle_category_selection(update: Update, context: CallbackContext) -> int:
-    """Обработка выбора категории"""
-    text = update.message.text
-    user = update.message.from_user
+@router.message(SupportStates.awaiting_support_message)
+async def forward_to_support(message: Message, state: FSMContext, bot: Bot):
+    """Пересылка сообщения в поддержку (анонимно)"""
+    user = message.from_user
+    message_text = message.text
     
-    category_map = {
-        "📦 Складные": "folding",
-        "🏔️ Горные": "mountain", 
-        "🚴 Гибридные": "hybrid",
-        "🏁 Шоссейные": "road"
-    }
+    # Форматируем сообщение для поддержки (анонимно)
+    support_message = (
+        f"🆕 Новое обращение в поддержку\n\n"
+        f"💬 Сообщение: {message_text}\n"
+        f"👤 ID пользователя: {user.id}\n"
+        f"👤 Имя: {user.first_name or 'Не указано'}\n"
+        f"📅 Время: {message.date.strftime('%Y-%m-%d %H:%M')}"
+    )
     
-    if text in category_map:
-        category = category_map[text]
-        context.user_data['current_category'] = category
-        
-        # Показываем велосипеды в выбранной категории
-        bikes = BIKES_DATA[category]['bikes']
-        
-        keyboard = []
-        for bike in bikes:
-            keyboard.append([KeyboardButton(f"🚲 {bike['name']} - {bike['price']}₽")])
-        
-        keyboard.append([KeyboardButton("⬅️ Назад"), KeyboardButton("🛒 Корзина")])
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        
-        await update.message.reply_text(
-            f"🏷️ {BIKES_DATA[category]['name']}:\n\n"
-            "Выберите велосипед для просмотра:",
-            reply_markup=reply_markup
-        )
-return VIEWING_PRODUCT
+    # Клавиатура для ответа поддержки
+    reply_keyboard = [
+        [InlineKeyboardButton(text="📝 Ответить", callback_data=f"reply_{user.id}")],
+        [InlineKeyboardButton(text="✅ Решено", callback_data=f"resolve_{user.id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=reply_keyboard)
     
-    elif text == "🛒 Корзина":
-        return await show_cart(update, context)
-    elif text == "ℹ️ О нас":
-        await update.message.reply_text(
-            "🏪 Магазин 'BikeShop'\n\n"
-            "📞 Телефон: +7 (999) 123-45-67\n"
-            "📍 Адрес: г. Москва, ул. Велосипедная, 1\n"
-            "⏰ Время работы: 10:00 - 20:00\n\n"
-            "Лучшие велосипеды по доступным ценам!"
-        )
-        return SELECTING_CATEGORY
+    # Отправляем всем поддержкам
+    for support_id in SUPPORT_IDS:
+        try:
+            sent_message = await bot.send_message(
+                chat_id=support_id,
+                text=support_message,
+                reply_markup=reply_markup
+            )
+            
+            # Сохраняем связь сообщений
+            if user.id not in user_support_messages:
+                user_support_messages[user.id] = []
+            
+            user_support_messages[user.id].append({
+                'user_message_id': message.message_id,
+                'support_message_id': sent_message.message_id,
+                'support_chat_id': support_id,
+                'user_name': user.first_name
+            })
+            
+        except Exception as e:
+            logger.error(f"Ошибка отправки поддержке {support_id}: {e}")
     
-    return SELECTING_CATEGORY
+    # Подтверждение пользователю
+    keyboard = [
+        [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
+    ]
+    
+    await message.answer(
+        "✅ Ваше сообщение отправлено в поддержку!\n"
+        "Мы ответим вам в ближайшее время.\n\n"
+        "🕐 Обычно отвечаем в течение 5-15 минут.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+    
+    # Сбрасываем состояние
+    await state.clear()
 
-async def handle_product_selection(update: Update, context: CallbackContext) -> int:
-    """Обработка выбора конкретного велосипеда"""
-    text = update.message.text
-    user = update.message.from_user
+@router.callback_query(F.data.startswith("reply_"))
+async def handle_support_reply(callback: CallbackQuery, state: FSMContext):
+    """Обработка ответа от поддержки"""
+    user_id = int(callback.data.split('_')[1])
     
-    if text == "⬅️ Назад":
-        return await start(update, context)
-    elif text == "🛒 Корзина":
-        return await show_cart(update, context)
+    user_name = "пользователь"
+    if user_id in user_support_messages and user_support_messages[user_id]:
+        user_name = user_support_messages[user_id][0].get('user_name', 'пользователь')
     
-    # Ищем выбранный велосипед
-    current_category = context.user_data.get('current_category', 'folding')
-    bikes = BIKES_DATA[current_category]['bikes']
+    await callback.message.edit_text(
+        f"💬 Ответ {user_name} (ID: {user_id}):\n\n"
+        "Введите ваш ответ:"
+    )
     
-    selected_bike = None
-    for bike in bikes:
-        if f"🚲 {bike['name']} - {bike['price']}₽" in text:
-            selected_bike = bike
-            break
+    # Сохраняем данные для ответа
+    await state.set_state(SupportStates.replying_to_user)
+    await state.update_data(user_id=user_id)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("resolve_"))
+async def handle_resolve_support(callback: CallbackQuery):
+    """Пометить обращение как решенное"""
+    user_id = int(callback.data.split('_')[1])
     
-    if selected_bike:
-        context.user_data['selected_bike'] = selected_bike
-        
-        keyboard = [
-            [KeyboardButton("✅ Добавить в корзину")],
-            [KeyboardButton("⬅️ Назад к категориям"), KeyboardButton("🛒 Корзина")]
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        
-        await update.message.reply_text(
-            f"🚲 {selected_bike['name']}\n\n"
-            f"📝 {selected_bike['description']}\n"
-            f"💰 Цена: {selected_bike['price']}₽\n\n"
-            f"Хотите добавить этот велосипед в корзину?",
-            reply_markup=reply_markup
+    await callback.message.edit_text(
+        f"✅ Обращение {user_id} помечено как решенное"
+    )
+    await callback.answer()
+
+@router.message(SupportStates.replying_to_user)
+async def handle_support_message(message: Message, state: FSMContext, bot: Bot):
+    """Обработка сообщения от поддержки пользователю"""
+    data = await state.get_data()
+    user_id = data.get('user_id')
+    support_message_text = message.text
+    
+    try:
+        # Отправляем сообщение пользователю (анонимно от поддержки)
+        await bot.send_message(
+            chat_id=user_id,
+            text=f"💬 **Ответ от поддержки:**\n\n{support_message_text}\n\n"
+                 f"_Для продолжения диалога просто ответьте на это сообщение_"
         )
         
-        return VIEWING_PRODUCT
+        # Уведомляем поддержку об успешной отправке
+        await message.answer("✅ Ответ отправлен пользователю!")
+        
+        # Логируем действие
+        logger.info(f"Support {message.from_user.id} replied to user {user_id}")
+        
+    except Exception as e:
+        await message.answer(f"❌ Ошибка отправки: {e}")
     
-    return VIEWING_PRODUCT
+    # Очищаем состояние
+    await state.clear()
 
-async def add_to_cart(update: Update, context: CallbackContext) -> int:
-    """Добавление товара в корзину"""
-    user = update.message.from_user
-    selected_bike = context.user_data.get('selected_bike')
+@router.message(F.reply_to_message)
+async def forward_user_reply_to_support(message: Message, bot: Bot):
+    """Пересылка ответа пользователя обратно в поддержку"""
+    user = message.from_user
+    message_text = message.text
     
-    if selected_bike:
-        user_carts[user.id].append(selected_bike)
-        await update.message.reply_text(f"✅ {selected_bike['name']} добавлен в корзину!")
-    
-    return await handle_category_selection(update, context)
-
-async def show_cart(update: Update, context: CallbackContext) -> int:
-    """Показать корзину пользователя"""
-    user = update.message.from_user
-    cart = user_carts.get(user.id, [])
-    
-    if not cart:
-        keyboard = [[KeyboardButton("⬅️ Назад к категориям")]]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        await update.message.reply_text(
-            "🛒 Ваша корзина пуста",
-            reply_markup=reply_markup
+    # Проверяем, является ли это ответом на сообщение поддержки
+    reply_text = message.reply_to_message.text
+    if "Ответ от поддержки" in reply_text:
+        
+        # Форматируем для поддержки
+        support_message = (
+            f"🔄 Ответ от пользователя {user.first_name} (ID: {user.id})\n\n"
+            f"💬 Сообщение: {message_text}\n"
+            f"📅 Время: {message.date.strftime('%H:%M')}"
         )
-        return SELECTING_CATEGORY
-    
-    total = sum(item['price'] for item in cart)
-    cart_text = "🛒 Ваша корзина:\n\n"
-    
-    for i, item in enumerate(cart, 1):
-        cart_text += f"{i}. {item['name']} - {item['price']}₽\n"
-    
-    cart_text += f"\n💰 Итого: {total}₽"
+        
+        # Отправляем всем поддержкам
+        for support_id in SUPPORT_IDS:
+            try:
+                keyboard = [
+                    [InlineKeyboardButton(text="📝 Ответить", callback_data=f"reply_{user.id}")],
+                    [InlineKeyboardButton(text="✅ Решено", callback_data=f"resolve_{user.id}")]
+                ]
+                
+                await bot.send_message(
+                    chat_id=support_id,
+                    text=support_message,
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+                )
+            except Exception as e:
+                logger.error(f"Ошибка отправки поддержке {support_id}: {e}")
+        
+        await message.answer("✅ Ваш ответ отправлен в поддержку!")
+
+@router.callback_query(F.data == "cancel_support")
+async def handle_cancel_support(callback: CallbackQuery, state: FSMContext):
+    """Отмена запроса в поддержку"""
+    await state.clear()
     
     keyboard = [
-        [KeyboardButton("✅ Оформить заказ")],
-        [KeyboardButton("🗑️ Очистить корзину"), KeyboardButton("⬅️ Назад к категориям")]
+        [
+            InlineKeyboardButton(text="🚴 Подбор велосипеда", callback_data="test_1"),
+            InlineKeyboardButton(text="🛒 Каталог", callback_data="catalog")
+        ],
+        [
+            InlineKeyboardButton(text="📞 Связаться с поддержкой", callback_data="support"),
+            InlineKeyboardButton(text="ℹ️ О магазине", callback_data="about")
+        ]
     ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     
-    await update.message.reply_text(cart_text, reply_markup=reply_markup)
-    
-    return CART
+    await callback.message.edit_text(
+        f"🚴‍♂️ Добро пожаловать в {config.SHOP_NAME}!\n\n"
+        "Выберите опцию:",
+        reply_markup=reply_markup
+    )
+    await callback.answer()
 
-async def handle_cart_actions(update: Update, context: CallbackContext) -> int:
-    """Обработка действий в корзине"""
-    text = update.message.text
-    user = update.message.from_user
+@router.callback_query(F.data == "main_menu")
+async def handle_main_menu(callback: CallbackQuery):
+    """Возврат в главное меню"""
+    keyboard = [
+        [
+            InlineKeyboardButton(text="🚴 Подбор велосипеда", callback_data="test_1"),
+            InlineKeyboardButton(text="🛒 Каталог", callback_data="catalog")
+        ],
+        [
+            InlineKeyboardButton(text="📞 Связаться с поддержкой", callback_data="support"),
+            InlineKeyboardButton(text="ℹ️ О магазине", callback_data="about")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     
-    if text == "✅ Оформить заказ":
-        return await checkout(update, context)
-    elif text == "🗑️ Очистить корзину":
-        user_carts[user.id] = []
-        await update.message.reply_text("🗑️ Корзина очищена!")
-        return await start(update, context)
-    elif text == "⬅️ Назад к категориям":
-        return await start(update, context)
-    
-    return CART
+    await callback.message.edit_text(
+        f"🚴‍♂️ Добро пожаловать в {config.SHOP_NAME}!\n\n"
+        "Выберите опцию:",
+        reply_markup=reply_markup
+    )
+    await callback.answer()
 
-async def checkout(update: Update, context: CallbackContext) -> int:
-"""Оформление заказа"""
-    user = update.message.from_user
-    cart = user_carts.get(user.id, [])
+# Обработчики тестов и каталога
+@router.callback_query(F.data.startswith("test_"))
+async def handle_test_selection(callback: CallbackQuery):
+    """Обработка выбора теста"""
+    test_id = int(callback.data.split('_')[1])
+    user_id = callback.from_user.id
     
-    if not cart:
-        await update.message.reply_text("Корзина пуста!")
-        return await start(update, context)
+    test = next((t for t in TESTS if t['id'] == test_id), None)
+    if not test:
+        await callback.message.edit_text("Тест не найден")
+        return
     
-    total = sum(item['price'] for item in cart)
+    user_progress[user_id] = {
+        'test_id': test_id,
+        'current_question': 0,
+        'answers': {},
+        'test_data': test
+    }
     
-    # В реальном проекте здесь была бы логика оформления заказа
-    order_text = f"📦 Заказ оформлен!\n\n"
-    for item in cart:
-        order_text += f"• {item['name']} - {item['price']}₽\n"
-    order_text += f"\n💰 Итого: {total}₽\n\n"
-    order_text += "📞 Наш менеджер свяжется с вами в ближайшее время для подтверждения заказа!"
-    
-    # Очищаем корзину после оформления
-    user_carts[user.id] = []
-    
-    keyboard = [[KeyboardButton("🔄 Новый заказ")]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    
-    await update.message.reply_text(order_text, reply_markup=reply_markup)
-    
-    return SELECTING_CATEGORY
+    await show_question(callback)
+    await callback.answer()
 
-async def cancel(update: Update, context: CallbackContext) -> int:
-    """Отмена диалога"""
-    user = update.message.from_user
-    logger.info(f"User {user.first_name} canceled the conversation.")
-    await update.message.reply_text(
-        'До свидания! Если захотите снова посмотреть велосипеды, напишите /start',
-        reply_markup=ReplyKeyboardMarkup([['/start']], resize_keyboard=True)
+async def show_question(callback: CallbackQuery):
+    """Показ вопроса теста"""
+    user_id = callback.from_user.id
+    
+    if user_id not in user_progress:
+        await callback.message.edit_text("Сессия устарела")
+        return
+    
+    progress = user_progress[user_id]
+    test = progress['test_data']
+    current_q_index = progress['current_question']
+    
+    if current_q_index >= len(test['questions']):
+        await finish_test(callback)
+        return
+    
+    question = test['questions'][current_q_index]
+    
+    keyboard = []
+    for answer in question['answers']:
+        keyboard.append([InlineKeyboardButton(text=answer['text'], callback_data=f"answer_{answer['id']}")])
+    
+    if current_q_index > 0:
+        keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back")])
+    
+    keyboard.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_test")])
+    
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    progress_text = f"📊 Вопрос {current_q_index + 1}/{len(test['questions'])}"
+    
+    await callback.message.edit_text(
+        f"{progress_text}\n\n{question['text']}",
+        reply_markup=reply_markup
+    )
+
+@router.callback_query(F.data.startswith("answer_"))
+async def handle_answer(callback: CallbackQuery):
+    """Обработка ответа на вопрос теста"""
+    user_id = callback.from_user.id
+    
+    if callback.data == "back":
+        progress = user_progress[user_id]
+        if progress['current_question'] > 0:
+            progress['current_question'] -= 1
+        await show_question(callback)
+        return
+    
+    if callback.data == "cancel_test":
+        if user_id in user_progress:
+            del user_progress[user_id]
+        await callback.message.edit_text("Тест отменен")
+        await handle_main_menu(callback)
+        return
+    
+    answer_id = int(callback.data.split('_')[1])
+    
+    progress = user_progress[user_id]
+    test = progress['test_data']
+    current_question = test['questions'][progress['current_question']]
+    
+    selected_answer = next((a for a in current_question['answers'] if a['id'] == answer_id), None)
+    if not selected_answer:
+        await callback.message.edit_text("Ошибка: ответ не найден")
+        return
+    
+    progress['answers'][current_question['id']] = selected_answer['id']
+    progress['current_question'] += 1
+    
+    await show_question(callback)
+    await callback.answer()
+
+async def finish_test(callback: CallbackQuery):
+    """Завершение теста"""
+    user_id = callback.from_user.id
+    
+    if user_id not in user_progress:
+        await callback.message.edit_text("Сессия устарела")
+        return
+    
+    progress = user_progress[user_id]
+    
+    # Рекомендации на основе теста
+    recommendations = "🚲 Рекомендуем:\n• Городской велосипед - 25,000₽\n• Горный велосипед - 35,000₽"
+    
+    keyboard = [
+        [InlineKeyboardButton(text="🛒 Перейти к покупкам", callback_data="catalog")],
+        [InlineKeyboardButton(text="📞 Консультация", callback_data="support")],
+        [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
+    ]
+    
+    await callback.message.edit_text(
+        f"✅ Тест завершен!\n\n{recommendations}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
     )
     
-    return ConversationHandler.END
+    del user_progress[user_id]
 
-def main() -> None:
+@router.callback_query(F.data == "catalog")
+async def handle_catalog(callback: CallbackQuery):
+    """Показ каталога"""
+    keyboard = [
+        [InlineKeyboardButton(text="📦 Складные", callback_data="cat_folding")],
+        [InlineKeyboardButton(text="🏔️ Горные", callback_data="cat_mountain")],
+        [InlineKeyboardButton(text="🚴 Гибридные", callback_data="cat_hybrid")],
+        [InlineKeyboardButton(text="📞 Консультация", callback_data="support")],
+        [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
+    ]
+    
+    await callback.message.edit_text(
+        "🛒 **Каталог велосипедов**\n\n"
+        "Выберите категорию:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+    await callback.answer()
+
+async def main():
     """Запуск бота"""
-    # Токен бота (замени на свой)
-    TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+    bot = Bot(token=config.BOT_TOKEN)
+    storage = MemoryStorage()
+    dp = Dispatcher(storage=storage)
+    dp.include_router(router)
     
-    # Создаем Application
-    application = Application.builder().token(TOKEN).build()
+    print(f"🤖 Бот {config.SHOP_NAME} запущен!")
+    print(f"📞 Поддержка: {len(SUPPORT_IDS)} администраторов")
+    print("🚴 Система продажи велосипедов активна")
     
-    # Настраиваем ConversationHandler
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
-        states={
-            SELECTING_CATEGORY: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_category_selection)
-            ],
-            VIEWING_PRODUCT: [
-                MessageHandler(filters.Regex("^✅ Добавить в корзину$"), add_to_cart),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_product_selection)
-            ],
-            CART: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_cart_actions)
-            ],
-        },
-        fallbacks=[CommandHandler('cancel', cancel)],
-    )
-    
-    application.add_handler(conv_handler)
-    
-    # Запускаем бота
-    print("Бот запущен...")
-    application.run_polling()
+    await dp.start_polling(bot)
 
 if __name__ == '__main__':
-    main()
+    import asyncio
+    asyncio.run(main())

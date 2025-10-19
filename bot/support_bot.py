@@ -7,6 +7,7 @@ from aiogram.fsm.state import State, StatesGroup
 from typing import Dict, List
 
 from config import config
+from api_ticket_service import APITicketService  # ✅ Правильный импорт
 
 # Настройка логирования
 logging.basicConfig(
@@ -15,8 +16,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Инициализация API сервиса ✅ ДОБАВЬ ЭТО
+ticket_service = APITicketService(
+    api_base_url=config.API_URL,
+    api_token=config.API_TOKEN
+)
+
 # Роутер
 router = Router()
+
+# Остальной код без изменений...
 
 # ID администраторов/поддержки из конфига
 SUPPORT_IDS = config.ADMIN_IDS
@@ -139,44 +148,64 @@ async def forward_to_support(message: Message, state: FSMContext, bot: Bot):
     user = message.from_user
     message_text = message.text
     
-    # Форматируем сообщение для поддержки (анонимно)
+    # 🔥 ДОБАВЛЯЕМ ВЫЗОВ API СЕРВИСА - ЭТОГО НЕТ В ТВОЕМ КОДЕ!
+    try:
+        logger.info("🔄 СОХРАНЕНИЕ ТИКЕТА В API...")
+        from api_ticket_service import ticket_service  # Импортируем сервис
+        
+        # Сохраняем тикет в API
+        api_result = await ticket_service.create_ticket(
+            tg_user=user,
+            message_text=message_text,
+            chat_id=str(message.chat.id),
+            msg_id=str(message.message_id)
+        )
+        
+        ticket_id = api_result.get("ticket_id", "unknown")
+        logger.info(f"✅ Тикет сохранен в API: {ticket_id}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка сохранения в API: {e}")
+        # Продолжаем работу даже если API недоступно
+        ticket_id = "not_saved"
+    
+    # ⚠️ ДАЛЬШЕ ТВОЙ СУЩЕСТВУЮЩИЙ КОД, НО ДОБАВЛЯЕМ ticket_id
     support_message = (
         f"🆕 Новое обращение в поддержку\n\n"
         f"💬 Сообщение: {message_text}\n"
         f"👤 ID пользователя: {user.id}\n"
         f"👤 Имя: {user.first_name or 'Не указано'}\n"
+        f"🎫 ID тикета: {ticket_id}\n"  # 🔥 ДОБАВИЛИ ticket_id
         f"📅 Время: {message.date.strftime('%Y-%m-%d %H:%M')}"
     )
     
-    # Клавиатура для ответа поддержки
     reply_keyboard = [
         [InlineKeyboardButton(text="📝 Ответить", callback_data=f"reply_{user.id}")],
         [InlineKeyboardButton(text="✅ Решено", callback_data=f"resolve_{user.id}")]
     ]
     reply_markup = InlineKeyboardMarkup(inline_keyboard=reply_keyboard)
     
-    # Отправляем всем поддержкам
-    for support_id in SUPPORT_IDS:
-        try:
-            sent_message = await bot.send_message(
-                chat_id=support_id,
-                text=support_message,
-                reply_markup=reply_markup
-            )
+    try:
+        sent_message = await bot.send_message(
+            chat_id=config.SUPPORT_ID,
+            text=support_message,
+            reply_markup=reply_markup
+        )
+        
+        # 🔥 ОБНОВЛЯЕМ СОХРАНЕНИЕ С ticket_id
+        if user.id not in user_support_messages:
+            user_support_messages[user.id] = []
+        
+        user_support_messages[user.id].append({
+            'user_message_id': message.message_id,
+            'support_message_id': sent_message.message_id,
+            'SUPPORT_ID': config.SUPPORT_ID,
+            'user_name': user.first_name,
+            'ticket_id': ticket_id  # 🔥 СОХРАНЯЕМ ID ТИКЕТА
+        })
             
-            # Сохраняем связь сообщений
-            if user.id not in user_support_messages:
-                user_support_messages[user.id] = []
-            
-            user_support_messages[user.id].append({
-                'user_message_id': message.message_id,
-                'support_message_id': sent_message.message_id,
-                'support_chat_id': support_id,
-                'user_name': user.first_name
-            })
-            
-        except Exception as e:
-            logger.error(f"Ошибка отправки поддержке {support_id}: {e}")
+    except Exception as e:
+        logger.error(f"Ошибка отправки поддержке {config.SUPPORT_ID}: {e}")
     
     # Подтверждение пользователю
     keyboard = [
@@ -223,30 +252,48 @@ async def handle_resolve_support(callback: CallbackQuery):
     await callback.answer()
 
 @router.message(SupportStates.replying_to_user)
-async def handle_support_message(message: Message, state: FSMContext, bot: Bot):
+async def handle_support_message(message: Message, state: FSMContext, bot: Bot, config=config):
     """Обработка сообщения от поддержки пользователю"""
     data = await state.get_data()
     user_id = data.get('user_id')
     support_message_text = message.text
     
     try:
-        # Отправляем сообщение пользователю (анонимно от поддержки)
-        await bot.send_message(
-            chat_id=user_id,
-            text=f"💬 **Ответ от поддержки:**\n\n{support_message_text}\n\n"
-                 f"_Для продолжения диалога просто ответьте на это сообщение_"
-        )
+        # 🔥 ДОБАВЛЯЕМ СОХРАНЕНИЕ ОТВЕТА В API
+        ticket_id = None
+        if user_id in user_support_messages and user_support_messages[user_id]:
+            ticket_id = user_support_messages[user_id][0].get('ticket_id')
         
-        # Уведомляем поддержку об успешной отправке
-        await message.answer("✅ Ответ отправлен пользователю!")
+        if ticket_id and ticket_id != "not_saved":
+            logger.info(f"💾 Сохранение ответа поддержки в API для тикета {ticket_id}")
+            from api_ticket_service import ticket_service
+            
+            await ticket_service.add_message(
+                ticket_id=ticket_id,
+                tg_user=message.from_user,  # поддержка
+                message_text=support_message_text,
+                chat_id=str(message.chat.id),
+                msg_id=str(message.message_id),
+                is_staff=True  # 🔥 Важно - сообщение от поддержки!
+            )
+            logger.info(f"✅ Ответ поддержки сохранен в API")
         
-        # Логируем действие
-        logger.info(f"Support {message.from_user.id} replied to user {user_id}")
+        # ДАЛЬШЕ ТВОЙ СУЩЕСТВУЮЩИЙ КОД...
+        user_chat_id = user_support_messages.get(user_id, [{}])[0].get('SUPPORT_ID')
+        if user_chat_id:
+            await bot.send_message(
+                chat_id=user_chat_id,
+                text=f"💬 **Ответ от поддержки:**\n\n{support_message_text}\n\n"
+                     f"_Для продолжения диалога просто ответьте на это сообщение_"
+            )
+            await message.answer("✅ Ответ отправлен пользователю!")
+        else:
+            await message.answer("❌ Не удалось найти чат пользователя")
         
     except Exception as e:
+        logger.error(f"❌ Ошибка отправки: {e}")
         await message.answer(f"❌ Ошибка отправки: {e}")
     
-    # Очищаем состояние
     await state.clear()
 
 @router.message(F.reply_to_message)

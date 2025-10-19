@@ -1,12 +1,12 @@
 from aiogram import Bot, Dispatcher
 from bot.config import config
 from bot.routers import hello
-from bot import bot2
+from bot.routers import ticket
 bot = Bot(token=config.BOT_TOKEN)
 dispatcher = Dispatcher()
 
 dispatcher.include_router(hello.router)
-dispatcher.include_router(bot2.router)
+dispatcher.include_router(ticket.router)
 
 
 

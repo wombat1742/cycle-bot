@@ -7,8 +7,13 @@ from aiogram.fsm.state import State, StatesGroup
 from typing import Dict, List
 
 from config import config
-from api_ticket_service import APITicketService  # ✅ Правильный импорт
+# ✅ Правильная инициализация API сервиса
+from ticket_service import APITicketService
 
+ticket_service = APITicketService(
+    api_base_url=config.API_URL,
+    api_token=config.API_TOKEN
+)
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',

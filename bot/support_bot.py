@@ -7,13 +7,8 @@ from aiogram.fsm.state import State, StatesGroup
 from typing import Dict, List
 
 from config import config
-# ✅ Правильная инициализация API сервиса
-from ticket_service import APITicketService
+from ticket_service import APITicketService  # ✅ ПРАВИЛЬНЫЙ ИМПОРТ
 
-ticket_service = APITicketService(
-    api_base_url=config.API_URL,
-    api_token=config.API_TOKEN
-)
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -21,7 +16,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Инициализация API сервиса ✅ ДОБАВЬ ЭТО
+# ✅ ПРАВИЛЬНАЯ ИНИЦИАЛИЗАЦИЯ API СЕРВИСА
 ticket_service = APITicketService(
     api_base_url=config.API_URL,
     api_token=config.API_TOKEN
@@ -30,11 +25,9 @@ ticket_service = APITicketService(
 # Роутер
 router = Router()
 
-# Остальной код без изменений...
-
 # ID администраторов/поддержки из конфига
-SUPPORT_IDS = config.ADMIN_IDS
-ADMIN_CHAT_ID = config.HELP_CHAT_ID
+SUPPORT_IDS = [680614471]  # Замени на config.ADMIN_IDS если есть в конфиге
+ADMIN_CHAT_ID = 680614471  # Замени на config.HELP_CHAT_ID если есть
 
 # Состояния для FSM
 class SupportStates(StatesGroup):
@@ -153,10 +146,9 @@ async def forward_to_support(message: Message, state: FSMContext, bot: Bot):
     user = message.from_user
     message_text = message.text
     
-    # 🔥 ДОБАВЛЯЕМ ВЫЗОВ API СЕРВИСА - ЭТОГО НЕТ В ТВОЕМ КОДЕ!
+    # 🔥 СОЗДАНИЕ ТИКЕТА В API
     try:
         logger.info("🔄 СОХРАНЕНИЕ ТИКЕТА В API...")
-        from api_ticket_service import ticket_service  # Импортируем сервис
         
         # Сохраняем тикет в API
         api_result = await ticket_service.create_ticket(
@@ -174,7 +166,7 @@ async def forward_to_support(message: Message, state: FSMContext, bot: Bot):
         # Продолжаем работу даже если API недоступно
         ticket_id = "not_saved"
     
-    # ⚠️ ДАЛЬШЕ ТВОЙ СУЩЕСТВУЮЩИЙ КОД, НО ДОБАВЛЯЕМ ticket_id
+    # Форматируем сообщение для поддержки (анонимно)
     support_message = (
         f"🆕 Новое обращение в поддержку\n\n"
         f"💬 Сообщение: {message_text}\n"
@@ -184,33 +176,35 @@ async def forward_to_support(message: Message, state: FSMContext, bot: Bot):
         f"📅 Время: {message.date.strftime('%Y-%m-%d %H:%M')}"
     )
     
+    # Клавиатура для ответа поддержки
     reply_keyboard = [
         [InlineKeyboardButton(text="📝 Ответить", callback_data=f"reply_{user.id}")],
         [InlineKeyboardButton(text="✅ Решено", callback_data=f"resolve_{user.id}")]
     ]
     reply_markup = InlineKeyboardMarkup(inline_keyboard=reply_keyboard)
     
+    # Отправляем всем поддержкам
     try:
         sent_message = await bot.send_message(
-            chat_id=config.SUPPORT_ID,
+            chat_id=ADMIN_CHAT_ID,
             text=support_message,
             reply_markup=reply_markup
         )
         
-        # 🔥 ОБНОВЛЯЕМ СОХРАНЕНИЕ С ticket_id
+        # Сохраняем связь сообщений
         if user.id not in user_support_messages:
             user_support_messages[user.id] = []
         
         user_support_messages[user.id].append({
             'user_message_id': message.message_id,
             'support_message_id': sent_message.message_id,
-            'SUPPORT_ID': config.SUPPORT_ID,
+            'SUPPORT_ID': ADMIN_CHAT_ID,
             'user_name': user.first_name,
             'ticket_id': ticket_id  # 🔥 СОХРАНЯЕМ ID ТИКЕТА
         })
             
     except Exception as e:
-        logger.error(f"Ошибка отправки поддержке {config.SUPPORT_ID}: {e}")
+        logger.error(f"Ошибка отправки поддержке {ADMIN_CHAT_ID}: {e}")
     
     # Подтверждение пользователю
     keyboard = [
@@ -251,27 +245,40 @@ async def handle_resolve_support(callback: CallbackQuery):
     """Пометить обращение как решенное"""
     user_id = int(callback.data.split('_')[1])
     
+    # 🔥 ЗАКРЫТИЕ ТИКЕТА В API
+    try:
+        if user_id in user_support_messages and user_support_messages[user_id]:
+            ticket_id = user_support_messages[user_id][0].get('ticket_id')
+            if ticket_id and ticket_id != "not_saved":
+                logger.info(f"🔒 Закрытие тикета {ticket_id} в API")
+                await ticket_service.close_ticket(
+                    ticket_id=ticket_id,
+                    closed_by=callback.from_user
+                )
+                logger.info(f"✅ Тикет {ticket_id} закрыт в API")
+    except Exception as e:
+        logger.error(f"❌ Ошибка закрытия тикета в API: {e}")
+    
     await callback.message.edit_text(
         f"✅ Обращение {user_id} помечено как решенное"
     )
     await callback.answer()
 
 @router.message(SupportStates.replying_to_user)
-async def handle_support_message(message: Message, state: FSMContext, bot: Bot, config=config):
+async def handle_support_message(message: Message, state: FSMContext, bot: Bot):
     """Обработка сообщения от поддержки пользователю"""
     data = await state.get_data()
     user_id = data.get('user_id')
     support_message_text = message.text
     
     try:
-        # 🔥 ДОБАВЛЯЕМ СОХРАНЕНИЕ ОТВЕТА В API
+        # 🔥 СОХРАНЕНИЕ ОТВЕТА ПОДДЕРЖКИ В API
         ticket_id = None
         if user_id in user_support_messages and user_support_messages[user_id]:
             ticket_id = user_support_messages[user_id][0].get('ticket_id')
         
         if ticket_id and ticket_id != "not_saved":
             logger.info(f"💾 Сохранение ответа поддержки в API для тикета {ticket_id}")
-            from api_ticket_service import ticket_service
             
             await ticket_service.add_message(
                 ticket_id=ticket_id,
@@ -283,7 +290,7 @@ async def handle_support_message(message: Message, state: FSMContext, bot: Bot, 
             )
             logger.info(f"✅ Ответ поддержки сохранен в API")
         
-        # ДАЛЬШЕ ТВОЙ СУЩЕСТВУЮЩИЙ КОД...
+        # Отправляем сообщение пользователю
         user_chat_id = user_support_messages.get(user_id, [{}])[0].get('SUPPORT_ID')
         if user_chat_id:
             await bot.send_message(
@@ -310,6 +317,29 @@ async def forward_user_reply_to_support(message: Message, bot: Bot):
     # Проверяем, является ли это ответом на сообщение поддержки
     reply_text = message.reply_to_message.text
     if "Ответ от поддержки" in reply_text:
+        
+        # 🔥 СОХРАНЕНИЕ ОТВЕТА ПОЛЬЗОВАТЕЛЯ В API
+        ticket_id = None
+        for uid, messages in user_support_messages.items():
+            if uid == user.id and messages:
+                ticket_id = messages[0].get('ticket_id')
+                break
+        
+        if ticket_id and ticket_id != "not_saved":
+            try:
+                logger.info(f"💾 Сохранение ответа пользователя в API для тикета {ticket_id}")
+                
+                await ticket_service.add_message(
+                    ticket_id=ticket_id,
+                    tg_user=user,
+                    message_text=message_text,
+                    chat_id=str(message.chat.id),
+                    msg_id=str(message.message_id),
+                    is_staff=False  # Сообщение от пользователя
+                )
+                logger.info(f"✅ Ответ пользователя сохранен в API")
+            except Exception as e:
+                logger.error(f"❌ Ошибка сохранения ответа пользователя: {e}")
         
         # Форматируем для поддержки
         support_message = (

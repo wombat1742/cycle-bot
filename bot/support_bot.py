@@ -8,6 +8,7 @@ from typing import Dict, List
 
 from config import config
 from ticket_service import APITicketService  # ✅ ПРАВИЛЬНЫЙ ИМПОРТ
+from order_system import router as order_router 
 
 # Настройка логирования
 logging.basicConfig(
@@ -376,7 +377,126 @@ async def handle_cancel_support(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "main_menu")
 async def handle_main_menu(callback: CallbackQuery):
     """Возврат в главное меню"""
-    await start(callback.message)
+    keyboard = [
+        [
+            InlineKeyboardButton(text="🚴 Подбор велосипеда", callback_data="test_1"),
+            InlineKeyboardButton(text="🛒 Каталог", callback_data="catalog")
+        ],
+        [
+            InlineKeyboardButton(text="🛒 Корзина", callback_data="cart"),
+            InlineKeyboardButton(text="📦 Мои заказы", callback_data="orders")
+        ],
+        [
+            InlineKeyboardButton(text="📞 Поддержка", callback_data="support"),
+            InlineKeyboardButton(text="🔔 Акции", callback_data="subscribe_promo")
+        ],
+        [
+            InlineKeyboardButton(text="ℹ️ О магазине", callback_data="about")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    await callback.message.edit_text(
+        f"🚴‍♂️ Добро пожаловать в {config.SHOP_NAME}!\n\n"
+        "Выберите опцию:",
+        reply_markup=reply_markup
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "cart")
+async def handle_cart(callback: CallbackQuery):
+    """Показ корзины"""
+    from order_system import user_carts
+    
+    user_id = callback.from_user.id
+    cart = user_carts.get(user_id, {})
+    
+    if not cart:
+        await callback.message.edit_text(
+            "🛒 Ваша корзина пуста",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🛒 К каталогу", callback_data="catalog")],
+                [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
+            ])
+        )
+        return
+    
+    # Заглушка товаров
+    products = {
+        1: {"name": "Горный велосипед X1", "price": 25000},
+        2: {"name": "Городской велосипед", "price": 18000},
+    }
+    
+    cart_text = "🛒 **Ваша корзина**\n\n"
+    total = 0
+    
+    for product_id, quantity in cart.items():
+        product = products.get(product_id, {"name": f"Товар #{product_id}", "price": 0})
+        item_total = product['price'] * quantity
+        total += item_total
+        cart_text += f"• {product['name']} - {product['price']}₽ x {quantity} = {item_total}₽\n"
+    
+    cart_text += f"\n💵 **Итого: {total}₽**"
+    
+    keyboard = [
+        [InlineKeyboardButton(text="✅ Оформить заказ", callback_data="checkout")],
+        [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="promo")],
+        [InlineKeyboardButton(text="🗑️ Очистить корзину", callback_data="clear_cart")],
+        [InlineKeyboardButton(text="🛒 К каталогу", callback_data="catalog")],
+        [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
+    ]
+    
+    await callback.message.edit_text(cart_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await callback.answer()
+
+@router.callback_query(F.data == "orders")
+async def show_orders(callback: CallbackQuery):
+    """История заказов"""
+    from order_system import user_orders
+    
+    user_id = callback.from_user.id
+    
+    # Фильтруем заказы пользователя
+    user_orders_list = []
+    for order_id, order in user_orders.items():
+        if order['user_id'] == user_id:
+            user_orders_list.append(order)
+    
+    if not user_orders_list:
+        await callback.message.edit_text(
+            "📦 У вас пока нет заказов",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🛒 Сделать заказ", callback_data="catalog")],
+                [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
+            ])
+        )
+        return
+    
+    # Сортируем по дате (новые сначала)
+    user_orders_list.sort(key=lambda x: x['created_at'], reverse=True)
+    
+    orders_text = "📦 **Ваши заказы**\n\n"
+    for order in user_orders_list[:5]:  # Последние 5 заказов
+        status_emoji = {
+            "Новый": "🆕",
+            "В работе": "👨‍🍳", 
+            "Готов": "✅",
+            "В пути": "🚗",
+            "Доставлен": "🎉",
+            "Отменен": "❌"
+        }.get(order['status'], "📦")
+        
+        orders_text += f"{status_emoji} Заказ #{order['id']}\n"
+        orders_text += f"📅 {order['created_at']}\n"
+        orders_text += f"💵 {order['total']}₽\n"
+        orders_text += f"📊 Статус: {order['status']}\n\n"
+    
+    keyboard = [
+        [InlineKeyboardButton(text="🛒 Новый заказ", callback_data="catalog")],
+        [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
+    ]
+    
+    await callback.message.edit_text(orders_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await callback.answer()
 
 # Обработчики тестов и каталога (упрощенная версия)
@@ -406,7 +526,7 @@ async def show_question(callback: CallbackQuery):
     user_id = callback.from_user.id
     
     if user_id not in user_progress:
-        await callback.message.edit_text("Сессия устарела")
+        await callback.message.edit_text("Сессиia устарела")
         return
     
     progress = user_progress[user_id]
@@ -506,6 +626,7 @@ async def handle_catalog(callback: CallbackQuery):
         [InlineKeyboardButton(text="📦 Складные", callback_data="cat_folding")],
         [InlineKeyboardButton(text="🏔️ Горные", callback_data="cat_mountain")],
         [InlineKeyboardButton(text="🚴 Гибридные", callback_data="cat_hybrid")],
+        [InlineKeyboardButton(text="🛒 Корзина", callback_data="cart")],
         [InlineKeyboardButton(text="📞 Консультация", callback_data="support")],
         [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
     ]
@@ -517,15 +638,105 @@ async def handle_catalog(callback: CallbackQuery):
     )
     await callback.answer()
 
+@router.callback_query(F.data.startswith("cat_"))
+async def handle_category_products(callback: CallbackQuery):
+    """Показ товаров категории"""
+    category = callback.data.replace("cat_", "")
+    
+    # Заглушка товаров по категориям
+    category_products = {
+        "mountain": [
+            {"id": 1, "name": "Горный велосипед X1", "price": 25000, "desc": "21 скорость, алюминиевая рама"},
+            {"id": 2, "name": "Горный велосипед Pro", "price": 35000, "desc": "27 скоростей, гидравлические тормоза"},
+        ],
+        "folding": [
+            {"id": 3, "name": "Складной велосипед City", "price": 18000, "desc": "Компактный для города"},
+        ],
+        "hybrid": [
+            {"id": 4, "name": "Гибридный велосипед Tour", "price": 22000, "desc": "Универсальный для города и трассы"},
+        ]
+    }
+    
+    products = category_products.get(category, [])
+    
+    if not products:
+        await callback.message.edit_text(
+            "😔 В этой категории пока нет товаров",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="catalog")],
+                [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
+            ])
+        )
+        return
+    
+    category_names = {
+        "mountain": "🏔️ Горные велосипеды",
+        "folding": "📦 Складные велосипеды",
+        "hybrid": "🚴 Гибридные велосипеды"
+    }
+    
+    category_name = category_names.get(category, "Категория")
+    
+    keyboard = []
+    for product in products:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"{product['name']} - {product['price']}₽", 
+                callback_data=f"product_{product['id']}"
+            )
+        ])
+    
+    keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="catalog")])
+    keyboard.append([InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")])
+    
+    await callback.message.edit_text(
+        f"{category_name}\n\nВыберите товар:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("product_"))
+async def handle_product_selection(callback: CallbackQuery):
+    """Обработка выбора товара"""
+    product_id = int(callback.data.split('_')[1])
+    
+    # Заглушка информации о товаре
+    products = {
+        1: {"name": "Горный велосипед X1", "price": 25000, "desc": "21 скорость, алюминиевая рама. Идеален для начинающих"},
+        2: {"name": "Горный велосипед Pro", "price": 35000, "desc": "27 скоростей, гидравлические тормоза. Профессиональная модель"},
+        3: {"name": "Складной велосипед City", "price": 18000, "desc": "Компактный для города. Удобен для commuting"},
+        4: {"name": "Гибридный велосипед Tour", "price": 22000, "desc": "Универсальный для города и трассы. Комфортная посадка"},
+    }
+    
+    product = products.get(product_id, {"name": "Товар", "price": 0, "desc": "Описание"})
+    
+    keyboard = [
+        [InlineKeyboardButton(text="🛒 Добавить в корзину", callback_data=f"add_to_cart_{product_id}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="catalog")],
+        [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
+    ]
+    
+    await callback.message.edit_text(
+        f"🚴 **{product['name']}**\n\n"
+        f"{product['desc']}\n\n"
+        f"💵 Цена: {product['price']}₽",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+    await callback.answer()
+
 async def main():
     """Запуск бота"""
     bot = Bot(token=config.BOT_TOKEN)
     dp = Dispatcher()
-    dp.include_router(router)
+    
+    # РЕГИСТРИРУЕМ ВСЕ РОУТЕРЫ
+    dp.include_router(router)           # основной роутер
+    dp.include_router(order_router)     # 🆕 ДОБАВЬ ЭТУ СТРОЧКУ!
     
     print(f"🤖 Бот {config.SHOP_NAME} запущен!")
     print(f"📞 Поддержка: {len(SUPPORT_IDS)} администраторов")
     print("🚴 Система продажи велосипедов активна")
+    print("🛒 Система заказов и уведомлений подключена!")
     
     await dp.start_polling(bot)
 

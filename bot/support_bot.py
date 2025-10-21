@@ -7,7 +7,7 @@ from aiogram.fsm.state import State, StatesGroup
 from typing import Dict, List
 
 from config import config
-from ticket_service import APITicketService  # ✅ ПРАВИЛЬНЫЙ ИМПОРТ
+from ticket_service import APITicketService
 from order_system import router as order_router 
 
 # Настройка логирования
@@ -17,7 +17,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ✅ ПРАВИЛЬНАЯ ИНИЦИАЛИЗАЦИЯ API СЕРВИСА
+# Инициализация API сервиса
 ticket_service = APITicketService(
     api_base_url=config.API_URL,
     api_token=config.API_TOKEN
@@ -26,9 +26,9 @@ ticket_service = APITicketService(
 # Роутер
 router = Router()
 
-# ID администраторов/поддержки из конфига
-SUPPORT_IDS = [680614471]  # Замени на config.ADMIN_IDS если есть в конфиге
-ADMIN_CHAT_ID = 680614471  # Замени на config.HELP_CHAT_ID если есть
+# ID администраторов/поддержки
+SUPPORT_IDS = [680614471]
+ADMIN_CHAT_ID = 680614471
 
 # Состояния для FSM
 class SupportStates(StatesGroup):
@@ -137,54 +137,44 @@ async def handle_support_request(callback: CallbackQuery, state: FSMContext):
         reply_markup=reply_markup
     )
     
-    # Устанавливаем состояние ожидания сообщения для поддержки
     await state.set_state(SupportStates.awaiting_support_message)
     await callback.answer()
 
 @router.message(SupportStates.awaiting_support_message)
 async def forward_to_support(message: Message, state: FSMContext, bot: Bot):
-    """Пересылка сообщения в поддержку (анонимно)"""
+    """Пересылка сообщения в поддержку"""
     user = message.from_user
     message_text = message.text
     
-    # 🔥 СОЗДАНИЕ ТИКЕТА В API
     try:
         logger.info("🔄 СОХРАНЕНИЕ ТИКЕТА В API...")
-        
-        # Сохраняем тикет в API
         api_result = await ticket_service.create_ticket(
             tg_user=user,
             message_text=message_text,
             chat_id=str(message.chat.id),
             msg_id=str(message.message_id)
         )
-        
         ticket_id = api_result.get("ticket_id", "unknown")
         logger.info(f"✅ Тикет сохранен в API: {ticket_id}")
-        
     except Exception as e:
         logger.error(f"❌ Ошибка сохранения в API: {e}")
-        # Продолжаем работу даже если API недоступно
         ticket_id = "not_saved"
     
-    # Форматируем сообщение для поддержки (анонимно)
     support_message = (
         f"🆕 Новое обращение в поддержку\n\n"
         f"💬 Сообщение: {message_text}\n"
         f"👤 ID пользователя: {user.id}\n"
         f"👤 Имя: {user.first_name or 'Не указано'}\n"
-        f"🎫 ID тикета: {ticket_id}\n"  # 🔥 ДОБАВИЛИ ticket_id
+        f"🎫 ID тикета: {ticket_id}\n"
         f"📅 Время: {message.date.strftime('%Y-%m-%d %H:%M')}"
     )
     
-    # Клавиатура для ответа поддержки
     reply_keyboard = [
         [InlineKeyboardButton(text="📝 Ответить", callback_data=f"reply_{user.id}")],
         [InlineKeyboardButton(text="✅ Решено", callback_data=f"resolve_{user.id}")]
     ]
     reply_markup = InlineKeyboardMarkup(inline_keyboard=reply_keyboard)
     
-    # Отправляем всем поддержкам
     try:
         sent_message = await bot.send_message(
             chat_id=ADMIN_CHAT_ID,
@@ -192,7 +182,6 @@ async def forward_to_support(message: Message, state: FSMContext, bot: Bot):
             reply_markup=reply_markup
         )
         
-        # Сохраняем связь сообщений
         if user.id not in user_support_messages:
             user_support_messages[user.id] = []
         
@@ -201,13 +190,12 @@ async def forward_to_support(message: Message, state: FSMContext, bot: Bot):
             'support_message_id': sent_message.message_id,
             'SUPPORT_ID': ADMIN_CHAT_ID,
             'user_name': user.first_name,
-            'ticket_id': ticket_id  # 🔥 СОХРАНЯЕМ ID ТИКЕТА
+            'ticket_id': ticket_id
         })
             
     except Exception as e:
         logger.error(f"Ошибка отправки поддержке {ADMIN_CHAT_ID}: {e}")
     
-    # Подтверждение пользователю
     keyboard = [
         [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
     ]
@@ -219,7 +207,6 @@ async def forward_to_support(message: Message, state: FSMContext, bot: Bot):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
     )
     
-    # Сбрасываем состояние
     await state.clear()
 
 @router.callback_query(F.data.startswith("reply_"))
@@ -236,7 +223,6 @@ async def handle_support_reply(callback: CallbackQuery, state: FSMContext):
         "Введите ваш ответ:"
     )
     
-    # Сохраняем данные для ответа
     await state.set_state(SupportStates.replying_to_user)
     await state.update_data(user_id=user_id, support_message_id=callback.message.message_id)
     await callback.answer()
@@ -246,7 +232,6 @@ async def handle_resolve_support(callback: CallbackQuery):
     """Пометить обращение как решенное"""
     user_id = int(callback.data.split('_')[1])
     
-    # 🔥 ЗАКРЫТИЕ ТИКЕТА В API
     try:
         if user_id in user_support_messages and user_support_messages[user_id]:
             ticket_id = user_support_messages[user_id][0].get('ticket_id')
@@ -273,25 +258,22 @@ async def handle_support_message(message: Message, state: FSMContext, bot: Bot):
     support_message_text = message.text
     
     try:
-        # 🔥 СОХРАНЕНИЕ ОТВЕТА ПОДДЕРЖКИ В API
         ticket_id = None
         if user_id in user_support_messages and user_support_messages[user_id]:
             ticket_id = user_support_messages[user_id][0].get('ticket_id')
         
         if ticket_id and ticket_id != "not_saved":
             logger.info(f"💾 Сохранение ответа поддержки в API для тикета {ticket_id}")
-            
             await ticket_service.add_message(
                 ticket_id=ticket_id,
-                tg_user=message.from_user,  # поддержка
+                tg_user=message.from_user,
                 message_text=support_message_text,
                 chat_id=str(message.chat.id),
                 msg_id=str(message.message_id),
-                is_staff=True  # 🔥 Важно - сообщение от поддержки!
+                is_staff=True
             )
             logger.info(f"✅ Ответ поддержки сохранен в API")
         
-        # Отправляем сообщение пользователю
         user_chat_id = user_support_messages.get(user_id, [{}])[0].get('SUPPORT_ID')
         if user_chat_id:
             await bot.send_message(
@@ -315,11 +297,9 @@ async def forward_user_reply_to_support(message: Message, bot: Bot):
     user = message.from_user
     message_text = message.text
     
-    # Проверяем, является ли это ответом на сообщение поддержки
     reply_text = message.reply_to_message.text
     if "Ответ от поддержки" in reply_text:
         
-        # 🔥 СОХРАНЕНИЕ ОТВЕТА ПОЛЬЗОВАТЕЛЯ В API
         ticket_id = None
         for uid, messages in user_support_messages.items():
             if uid == user.id and messages:
@@ -329,27 +309,24 @@ async def forward_user_reply_to_support(message: Message, bot: Bot):
         if ticket_id and ticket_id != "not_saved":
             try:
                 logger.info(f"💾 Сохранение ответа пользователя в API для тикета {ticket_id}")
-                
                 await ticket_service.add_message(
                     ticket_id=ticket_id,
                     tg_user=user,
                     message_text=message_text,
                     chat_id=str(message.chat.id),
                     msg_id=str(message.message_id),
-                    is_staff=False  # Сообщение от пользователя
+                    is_staff=False
                 )
                 logger.info(f"✅ Ответ пользователя сохранен в API")
             except Exception as e:
                 logger.error(f"❌ Ошибка сохранения ответа пользователя: {e}")
         
-        # Форматируем для поддержки
         support_message = (
             f"🔄 Ответ от пользователя {user.first_name} (ID: {user.id})\n\n"
             f"💬 Сообщение: {message_text}\n"
             f"📅 Время: {message.date.strftime('%H:%M')}"
         )
         
-        # Отправляем всем поддержкам
         for support_id in SUPPORT_IDS:
             try:
                 keyboard = [
@@ -421,7 +398,6 @@ async def handle_cart(callback: CallbackQuery):
         )
         return
     
-    # Заглушка товаров
     products = {
         1: {"name": "Горный велосипед X1", "price": 25000},
         2: {"name": "Городской велосипед", "price": 18000},
@@ -456,7 +432,6 @@ async def show_orders(callback: CallbackQuery):
     
     user_id = callback.from_user.id
     
-    # Фильтруем заказы пользователя
     user_orders_list = []
     for order_id, order in user_orders.items():
         if order['user_id'] == user_id:
@@ -472,11 +447,10 @@ async def show_orders(callback: CallbackQuery):
         )
         return
     
-    # Сортируем по дате (новые сначала)
     user_orders_list.sort(key=lambda x: x['created_at'], reverse=True)
     
     orders_text = "📦 **Ваши заказы**\n\n"
-    for order in user_orders_list[:5]:  # Последние 5 заказов
+    for order in user_orders_list[:5]:
         status_emoji = {
             "Новый": "🆕",
             "В работе": "👨‍🍳", 
@@ -499,7 +473,6 @@ async def show_orders(callback: CallbackQuery):
     await callback.message.edit_text(orders_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await callback.answer()
 
-# Обработчики тестов и каталога (упрощенная версия)
 @router.callback_query(F.data.startswith("test_"))
 async def handle_test_selection(callback: CallbackQuery):
     """Обработка выбора теста"""
@@ -526,7 +499,7 @@ async def show_question(callback: CallbackQuery):
     user_id = callback.from_user.id
     
     if user_id not in user_progress:
-        await callback.message.edit_text("Сессиia устарела")
+        await callback.message.edit_text("Сессия устарела")
         return
     
     progress = user_progress[user_id]
@@ -603,7 +576,6 @@ async def finish_test(callback: CallbackQuery):
     
     progress = user_progress[user_id]
     
-    # Рекомендации на основе теста
     recommendations = "🚲 Рекомендуем:\n• Городской велосипед - 25,000₽\n• Горный велосипед - 35,000₽"
     
     keyboard = [
@@ -643,7 +615,6 @@ async def handle_category_products(callback: CallbackQuery):
     """Показ товаров категории"""
     category = callback.data.replace("cat_", "")
     
-    # Заглушка товаров по категориям
     category_products = {
         "mountain": [
             {"id": 1, "name": "Горный велосипед X1", "price": 25000, "desc": "21 скорость, алюминиевая рама"},
@@ -700,7 +671,6 @@ async def handle_product_selection(callback: CallbackQuery):
     """Обработка выбора товара"""
     product_id = int(callback.data.split('_')[1])
     
-    # Заглушка информации о товаре
     products = {
         1: {"name": "Горный велосипед X1", "price": 25000, "desc": "21 скорость, алюминиевая рама. Идеален для начинающих"},
         2: {"name": "Горный велосипед Pro", "price": 35000, "desc": "27 скоростей, гидравлические тормоза. Профессиональная модель"},
@@ -724,14 +694,104 @@ async def handle_product_selection(callback: CallbackQuery):
     )
     await callback.answer()
 
+# 🆕 ОБРАБОТЧИКИ ДЛЯ КОРЗИНЫ И АКЦИЙ
+@router.callback_query(F.data.startswith("add_to_cart_"))
+async def add_to_cart(callback: CallbackQuery):
+    """Добавление товара в корзину"""
+    from order_system import user_carts
+    
+    user_id = callback.from_user.id
+    product_id = int(callback.data.split('_')[3])
+    
+    if user_id not in user_carts:
+        user_carts[user_id] = {}
+    
+    if product_id not in user_carts[user_id]:
+        user_carts[user_id][product_id] = 0
+    
+    user_carts[user_id][product_id] += 1
+    
+    await callback.answer("✅ Товар добавлен в корзину!")
+
+@router.callback_query(F.data == "clear_cart")
+async def clear_cart(callback: CallbackQuery):
+    """Очистка корзины"""
+    from order_system import user_carts
+    
+    user_id = callback.from_user.id
+    if user_id in user_carts:
+        user_carts[user_id] = {}
+    
+    await callback.message.edit_text(
+        "🗑️ Корзина очищена",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🛒 К каталогу", callback_data="catalog")],
+            [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
+        ])
+    )
+
+@router.callback_query(F.data == "subscribe_promo")
+async def subscribe_to_promotions(callback: CallbackQuery):
+    """Подписка на акции и уведомления"""
+    await callback.message.edit_text(
+        "🔔 **Вы подписаны на уведомления!**\n\n"
+        "Теперь вы будете первыми узнавать о:\n"
+        "• 🎁 Скидках и акциях\n"
+        "• 🚴 Новых поступлениях\n"
+        "• ⚡ Специальных предложениях\n\n"
+        "Не пропустите ничего важного!",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🛒 Перейти в каталог", callback_data="catalog")],
+            [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
+        ])
+    )
+
+@router.callback_query(F.data == "promo")
+async def enter_promo(callback: CallbackQuery):
+    """Информация о промокодах"""
+    await callback.message.edit_text(
+        "🎁 **Промокоды**\n\n"
+        "Доступные промокоды:\n"
+        "• WELCOME10 - 10% скидка\n"
+        "• BIKE2024 - 15% на велосипеды\n"
+        "• FREEDELIVERY - бесплатная доставка\n\n"
+        "Введите промокод при оформлении заказа!",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🛒 Перейти в корзину", callback_data="cart")],
+            [InlineKeyboardButton(text="📋 Главное меню", callback_data="main_menu")]
+        ])
+    )
+
+# 🆕 ДОБАВЛЯЕМ ОБРАБОТЧИКИ ДЛЯ ВСЕХ ОСТАВШИХСЯ CALLBACK_DATA
+@router.callback_query(F.data == "back")
+async def handle_back(callback: CallbackQuery):
+    """Обработка кнопки Назад в тесте"""
+    user_id = callback.from_user.id
+    
+    if user_id in user_progress:
+        progress = user_progress[user_id]
+        if progress['current_question'] > 0:
+            progress['current_question'] -= 1
+        await show_question(callback)
+    else:
+        await callback.answer("❌ Сессия устарела")
+
+@router.callback_query(F.data == "cancel_test")
+async def handle_cancel_test(callback: CallbackQuery):
+    """Отмена теста"""
+    user_id = callback.from_user.id
+    if user_id in user_progress:
+        del user_progress[user_id]
+    await callback.message.edit_text("Тест отменен")
+    await start(callback.message)
+
 async def main():
     """Запуск бота"""
     bot = Bot(token=config.BOT_TOKEN)
     dp = Dispatcher()
     
-    # РЕГИСТРИРУЕМ ВСЕ РОУТЕРЫ
-    dp.include_router(router)           # основной роутер
-    dp.include_router(order_router)     # 🆕 ДОБАВЬ ЭТУ СТРОЧКУ!
+    dp.include_router(router)
+    dp.include_router(order_router)
     
     print(f"🤖 Бот {config.SHOP_NAME} запущен!")
     print(f"📞 Поддержка: {len(SUPPORT_IDS)} администраторов")
